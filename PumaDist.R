@@ -1,7 +1,7 @@
 ##########################
 # DESCRIPTION
 ##########################
-# File1: State - Census - Puma: https://www.census.gov/geo/maps-data/data/centract_rel.html
+# File1: State - Census - Puma10: https://www.census.gov/geo/maps-data/data/centract_rel.html
 # File2: Census - Pop: https://www.census.gov/geo/maps-data/data/tract_rel_download.html
 #             headers: https://www.census.gov/geo/maps-data/data/tract_rel_layout.html
 # File3: State Name - State FIPS - County FIPS - County Name: https://www.census.gov/geo/reference/codes/cou.html
@@ -28,7 +28,8 @@
 # translate_puma10(state, puma) - returns list containing puma00 codes matching to puma10 and their proportion
 # get_old_pumas(state, pumas) - takes puma10 codes and returns all puma00 codes matching
 # get_pop(state, county, tract) - gets population of census tract in countyfp, statefp
-# get_state_dist(state) - gets relative distribution of pumas in each county for scaling ACS PUMA data
+# get_state_dist(state) - gets relative distribution of pumas in each county for scaling ACS PUMA data for puma10
+# state_dist_10_to_00(state, state_dist10) - transforms a puma10 state distribution to puma00 state distribution
 # get_acs_df(state) - returns the df with final sex/race rows for puma/counties in statefp
 # generate_sheet(state) - takes statefp or state abbrev. and writes the appropriate excel sheet
 ##########################
@@ -102,8 +103,36 @@ get_state_dist <- function(state){
   county_puma_dist
 }
 
+state_dist_10_to_00 <- function(state, state_dist10){
+  lapply(state_dist10, function(county_dist10){
+    full_puma00_dist <- NULL
+    
+    for(j in seq_along(county_dist10)){
+      puma10 <- names(county_dist10)[j]
+      old_pumas <- translate_puma10(state, puma10)
+      
+      puma00_dist <- sapply(old_pumas, function(x) x * county_dist10[[j]])
+      
+      for(k in seq_along(puma00_dist)){
+        puma00 <- names(puma00_dist)[k]
+        if(puma00 %in% names(full_puma00_dist)){
+          full_puma00_dist[[puma00]] <- puma00_dist[[k]] + full_puma00_dist[[puma00]]
+        }
+        else{
+          full_puma00_dist <- c(full_puma00_dist, puma00_dist[[k]])
+          names(full_puma00_dist)[length(full_puma00_dist)] <- puma00
+        }
+      }
+    }
+    
+    full_puma00_dist
+  })
+}
+
 get_acs_df <- function(state, data){
   state_dist <- get_state_dist(state)
+  state00_dist <- state_dist_10_to_00(state, state_dist)
+  
   new_data <- subset(data, PUMA10 != -9)[,c("PUMA10", "PWGTP", "SEX", "RAC1P")]
   old_data <- subset(data, PUMA00 != -9)[,c("PUMA00", "PWGTP", "SEX", "RAC1P")]
   
@@ -157,9 +186,7 @@ get_acs_df <- function(state, data){
     }
   }
   
-  
-  # We now aggregate by puma00 codes. Since puma00codes are based off puma10 distributions we use same method
-  # to get the puma10 values and break those down into their puma00 distributions
+  # We now aggregate by puma00 codes. The same method is used with the state00_dist
   aggdata <- aggregate(old_data, by = list(old_data$PUMA00, old_data$SEX, old_data$RAC1P), FUN = sum)
   
   for(i in 1:nrow(aggdata)){
@@ -169,22 +196,16 @@ get_acs_df <- function(state, data){
     sex <- row[[2]]
     race <- row[[3]]
     rows <- row$PWGTP[1]
-    
-    for(j in seq_along(state_dist)){
-      if(puma %in% names(state_dist[[j]])){
-        county <- names(state_dist)[j]
+
+    for(j in seq_along(state00_dist)){
+      if(puma %in% names(state00_dist[[j]])){
+        county <- names(state00_dist)[j]
         county <- translate_county(state, county)
+        insert_at_col <- which(colnames(df) == paste0(county, "|PUMA00:", puma))
         insert_at_row <- which(rownames(df) == paste0("SEX:", sex, "|RACE:", race))
-        puma10_rows <- round(rows * state_dist[[j]][[puma]])
+        puma00_rows <- round(rows * state00_dist[[j]][[puma]])
         
-        old_pumas <- translate_puma10(state, puma)
-        for(k in seq_along(old_pumas)){
-          puma00_rows <- round(puma10_rows * old_pumas[k])
-          
-          insert_at_col <- which(colnames(df) == paste0(county, "|PUMA00:", names(old_pumas)[k]))
-          
-          df[insert_at_row, insert_at_col] <- puma00_rows + df[insert_at_row, insert_at_col]
-        }
+        df[insert_at_row,insert_at_col] <- puma00_rows
       }
     }
   }
